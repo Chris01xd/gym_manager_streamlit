@@ -1,3 +1,10 @@
+# --- bootstrap de path ---
+import os, sys
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+# --- fin bootstrap ---
+
 import streamlit as st, os
 from app.lib.auth import login_form, has_permission
 from app.lib.sp_wrappers import kpis
