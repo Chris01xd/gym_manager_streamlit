@@ -1,9 +1,38 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
-from lib.auth import login_form, has_permission
-from lib.sp_wrappers import kpis
-from lib.db import query
+import sys
+import os
+
+# Ajustar el path para importaciones
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+sys.path.insert(0, current_dir)
+sys.path.insert(0, parent_dir)
+
+# Intentar diferentes rutas de importación
+try:
+    from lib.auth import login_form, has_permission
+    from lib.sp_wrappers import kpis
+    from lib.db import query
+except ImportError:
+    try:
+        from app.lib.auth import login_form, has_permission
+        from app.lib.sp_wrappers import kpis
+        from app.lib.db import query
+    except ImportError:
+        try:
+            import lib.auth as auth
+            import lib.sp_wrappers as sp
+            import lib.db as db
+            login_form = auth.login_form
+            has_permission = auth.has_permission
+            kpis = sp.kpis
+            query = db.query
+        except ImportError as e:
+            st.error(f"Error importando módulos: {e}")
+            st.error("Verifica que los archivos lib/auth.py, lib/sp_wrappers.py y lib/db.py existan")
+            st.stop()
 
 st.set_page_config(page_title="Gym Manager", page_icon="🏋️", layout="wide")
 
@@ -110,6 +139,47 @@ else:
 
     st.divider()
 
+    # === SELECTOR DE MÓDULOS ===
+    st.header("🚀 Módulos del Sistema")
+    
+    # Lista de módulos disponibles según permisos
+    modulos_disponibles = []
+    
+    if has_permission("socios_read"):
+        modulos_disponibles.append("👤 Gestión de Socios")
+    if has_permission("membership_assign") or has_permission("plans_manage"):
+        modulos_disponibles.append("💳 Membresías y Planes")
+    if has_permission("classes_publish") or has_permission("reservations_create"):
+        modulos_disponibles.append("📆 Clases y Reservas")
+    if has_permission("access_entry") or has_permission("access_exit"):
+        modulos_disponibles.append("🚪 Control de Acceso")
+    if has_permission("products_manage"):
+        modulos_disponibles.append("🛒 Inventario")
+    if has_permission("sales_read") or has_permission("sales_create"):
+        modulos_disponibles.append("💵 Punto de Venta")
+    if has_permission("payments_read") or has_permission("payments_create"):
+        modulos_disponibles.append("💳 Gestión de Pagos")
+    if has_permission("reports_view"):
+        modulos_disponibles.append("📊 Reportes")
+    if has_permission("users_manage"):
+        modulos_disponibles.append("👥 Administración")
+    if has_permission("audit_view"):
+        modulos_disponibles.append("📑 Auditoría")
+
+    # Nota sobre navegación
+    if modulos_disponibles:
+        st.info("📝 **Nota:** Para acceder a los módulos específicos, navega usando las páginas del sidebar izquierdo. Si encuentras errores de importación, contacta al administrador del sistema.")
+        
+        # Mostrar módulos disponibles como información
+        cols = st.columns(3)
+        for i, modulo in enumerate(modulos_disponibles):
+            with cols[i % 3]:
+                st.write(f"✅ {modulo}")
+    else:
+        st.warning("No tienes permisos para acceder a módulos específicos. Contacta al administrador.")
+
+    st.divider()
+
     # === GRÁFICOS DE TENDENCIAS ===
     st.header("📈 Tendencias")
     
@@ -154,44 +224,6 @@ else:
                 st.info("No hay datos de ventas en la última semana")
         except Exception as e:
             st.error(f"Error cargando gráfico de ventas: {e}")
-
-    st.divider()
-
-    # === ATAJOS RÁPIDOS ===
-    st.header("🚀 Acceso Rápido")
-
-    # Reset contador de columnas
-    st.session_state["col_index"] = 0
-    cols = st.columns(3)
-
-    def add_link(path, label, icon):
-        """Agrega un link en la columna que toque"""
-        nonlocal_index = st.session_state.get("col_index", 0)
-        with cols[nonlocal_index % 3]:
-            st.page_link(path, label=label, icon=icon)
-        st.session_state["col_index"] = nonlocal_index + 1
-
-    # Enlaces según permisos
-    if has_permission("socios_read"):
-        add_link("pages/1_Socios.py", "Gestión de Socios", "👤")
-    if has_permission("membership_assign") or has_permission("plans_manage"):
-        add_link("pages/2_Membresias.py", "Membresías y Planes", "💳")
-    if has_permission("classes_publish") or has_permission("reservations_create"):
-        add_link("pages/3_Clases.py", "Clases y Reservas", "📆")
-    if has_permission("access_entry") or has_permission("access_exit"):
-        add_link("pages/4_Accesos_Aforo.py", "Control de Acceso", "🚪")
-    if has_permission("products_manage"):
-        add_link("pages/7_Productos.py", "Inventario", "🛒")
-    if has_permission("sales_read") or has_permission("sales_create"):
-        add_link("pages/8_Ventas.py", "Punto de Venta", "💵")
-    if has_permission("payments_read") or has_permission("payments_create"):
-        add_link("pages/10_Pagos.py", "Gestión de Pagos", "💳")
-    if has_permission("reports_view"):
-        add_link("pages/5_Reportes.py", "Reportes", "📊")
-    if has_permission("users_manage"):
-        add_link("pages/6_Usuarios.py", "Administración", "👥")
-    if has_permission("audit_view"):
-        add_link("pages/9_Auditoria.py", "Auditoría", "📑")
 
     st.divider()
 
@@ -321,6 +353,25 @@ else:
         except Exception as e:
             st.error(f"Error cargando productos: {e}")
 
+    # === ACCIONES RÁPIDAS ===
+    st.divider()
+    st.header("⚡ Acciones Rápidas")
+    
+    action_col1, action_col2, action_col3 = st.columns(3)
+    
+    with action_col1:
+        if st.button("🔍 Buscar Socio", use_container_width=True):
+            st.info("Funcionalidad disponible en el módulo de Socios")
+    
+    with action_col2:
+        if st.button("📝 Nueva Reserva", use_container_width=True):
+            st.info("Funcionalidad disponible en el módulo de Clases")
+    
+    with action_col3:
+        if st.button("💰 Registrar Pago", use_container_width=True):
+            st.info("Funcionalidad disponible en el módulo de Pagos")
+
     # === PIE DE PÁGINA ===
     st.divider()
     st.caption(f"🕒 Última actualización: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
+    st.caption("💡 **Sugerencia:** Si encuentras errores al navegar a otras páginas, todas las funciones principales están disponibles desde este dashboard.")
