@@ -402,9 +402,8 @@ with tab_listado:
                     
                     # Generar recibo de la venta seleccionada
                     if st.button("📄 Ver recibo"):
-                        recibo_html = generar_recibo_html(sel, det)
-                        st.markdown("### 📄 Recibo")
-                        st.markdown(recibo_html, unsafe_allow_html=True)
+                        st.markdown("### 📄 Recibo de Venta")
+                        mostrar_recibo_streamlit(sel, det)
 
                 # Opción de anular venta
                 if has_permission("sales_refund"):
