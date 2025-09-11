@@ -13,8 +13,53 @@ st.title("💵 Ventas")
 require_login()
 
 # ---------------------------------------
-# Helpers
+# Funciones Helper
 # ---------------------------------------
+
+def mostrar_recibo_streamlit(venta_data, items_data):
+    """Muestra el recibo usando SOLO componentes nativos de Streamlit"""
+    try:
+        fecha_formateada = venta_data['fecha'].strftime("%d/%m/%Y %H:%M")
+        
+        # Contenedor del recibo
+        with st.container():
+            st.markdown("---")
+            
+            # Encabezado centrado
+            col1, col2, col3 = st.columns([1, 2, 1])
+            with col2:
+                st.write("## 🏪 RECIBO DE VENTA")
+                st.write(f"**Venta N° {venta_data['id']}**")
+                st.write(f"**Fecha:** {fecha_formateada}")
+                st.write(f"**Cliente:** {venta_data['socio']}")
+            
+            st.markdown("---")
+            st.write("### 📋 Detalle de productos:")
+            
+            # Crear tabla de productos
+            recibo_items = []
+            for item in items_data:
+                recibo_items.append({
+                    "Producto": item['nombre'],
+                    "Cantidad": item['cantidad'],
+                    "P. Unitario": f"S/ {float(item['precio_unitario']):.2f}",
+                    "Subtotal": f"S/ {float(item['subtotal']):.2f}"
+                })
+            
+            # Mostrar tabla
+            st.table(recibo_items)
+            
+            # Total destacado
+            st.markdown("---")
+            col1, col2, col3 = st.columns([1, 1, 1])
+            with col2:
+                st.success(f"## TOTAL: S/ {float(venta_data['total']):.2f}")
+            
+            st.markdown("---")
+            st.write("*¡Gracias por su compra!* 😊")
+    except Exception as e:
+        st.error(f"Error al mostrar recibo: {e}")
+
 def add_item_with_stock_guard(cur, venta_id, it):
     """
     Descuenta stock e inserta el ítem SOLO si alcanza el stock (op. atómica).
@@ -79,63 +124,11 @@ def merge_or_append_item(items, prod, cantidad):
 
     return new_items
 
-def generar_recibo_html(venta_data, items_data):
-    """Genera el HTML del recibo de venta"""
-    fecha_formateada = venta_data['fecha'].strftime("%d/%m/%Y %H:%M")
-    
-    items_html = ""
-    for item in items_data:
-        items_html += f"""
-        <tr>
-            <td>{item['nombre']}</td>
-            <td style="text-align: center;">{item['cantidad']}</td>
-            <td style="text-align: right;">S/ {item['precio_unitario']:.2f}</td>
-            <td style="text-align: right;">S/ {item['subtotal']:.2f}</td>
-        </tr>
-        """
-    
-    html = f"""
-    <div style="max-width: 400px; margin: 0 auto; font-family: monospace; font-size: 12px; padding: 20px; border: 1px solid #ccc;">
-        <div style="text-align: center; margin-bottom: 20px;">
-            <h3>🏪 RECIBO DE VENTA</h3>
-            <p>Venta N° {venta_data['id']}</p>
-            <p>{fecha_formateada}</p>
-        </div>
-        
-        <div style="margin-bottom: 15px;">
-            <strong>Cliente:</strong> {venta_data['socio']}<br>
-        </div>
-        
-        <table style="width: 100%; border-collapse: collapse; margin-bottom: 15px;">
-            <thead>
-                <tr style="border-bottom: 1px solid #000;">
-                    <th style="text-align: left;">Producto</th>
-                    <th style="text-align: center;">Cant</th>
-                    <th style="text-align: right;">P.Unit</th>
-                    <th style="text-align: right;">Subtotal</th>
-                </tr>
-            </thead>
-            <tbody>
-                {items_html}
-            </tbody>
-        </table>
-        
-        <div style="border-top: 1px solid #000; padding-top: 10px;">
-            <div style="text-align: right; font-size: 14px; font-weight: bold;">
-                TOTAL: S/ {venta_data['total']:.2f}
-            </div>
-        </div>
-        
-        <div style="text-align: center; margin-top: 20px; font-size: 11px;">
-            <p>¡Gracias por su compra!</p>
-        </div>
-    </div>
-    """
-    return html
+# ---------------------------------------
+# Interfaz de Usuario
+# ---------------------------------------
 
-# ---------------------------------------
-# UI
-# ---------------------------------------
+# Crear tabs
 tab_nueva, tab_listado = st.tabs(["➕ Nueva venta", "📋 Listado / Anular"])
 
 # --------- NUEVA VENTA ----------
@@ -143,9 +136,8 @@ with tab_nueva:
     if not has_permission("sales_create"):
         st.info("No tienes permiso para crear ventas.")
     else:
-        # Consultar socios y productos (con filtro activo y stock > 0 para mejor UX)
+        # Consultar datos necesarios
         socios = query("SELECT id, nombre FROM socio ORDER BY id DESC LIMIT 300")
-        # CAMBIO: Filtrar productos con stock > 0 para evitar confusión
         prods = query("SELECT id, nombre, precio, stock FROM producto WHERE activo IS TRUE AND stock > 0 ORDER BY nombre")
 
         if not socios:
@@ -153,9 +145,11 @@ with tab_nueva:
         elif not prods:
             st.warning("No hay productos activos con stock disponible.")
         else:
+            # Selección de socio
             socio = st.selectbox("Socio", socios, format_func=lambda s: f"{s['id']} - {s['nombre']}")
 
             st.markdown("### Ítems")
+            
             # Inicializar carrito en session_state
             if "venta_items" not in st.session_state:
                 st.session_state["venta_items"] = []
@@ -163,6 +157,7 @@ with tab_nueva:
             # Formulario para agregar productos
             with st.form("f_add_item", clear_on_submit=True):
                 col1, col2, col3 = st.columns([3,1,1])
+                
                 with col1:
                     prod = st.selectbox(
                         "Producto",
@@ -170,10 +165,10 @@ with tab_nueva:
                         format_func=lambda p: f"{p['nombre']} - S/{p['precio']:.2f} (Stock: {p['stock']})",
                         key="prod_select"
                     )
+                
                 with col2:
-                    # Validar que hay stock disponible
                     if prod and prod["stock"] > 0:
-                        # Calcular stock disponible considerando lo que ya está en el carrito
+                        # Calcular stock disponible considerando carrito
                         stock_en_carrito = 0
                         for item in st.session_state["venta_items"]:
                             if item["producto_id"] == prod["id"]:
@@ -195,36 +190,26 @@ with tab_nueva:
                 try:
                     st.session_state["venta_items"] = merge_or_append_item(st.session_state["venta_items"], prod, cant)
                     st.success(f"✅ Agregado: {prod['nombre']} x {int(cant)}")
-                    st.rerun()  # Actualizar la interfaz
+                    st.rerun()
                 except Exception as e:
                     st.error(f"❌ Error: {str(e)}")
 
             # Mostrar carrito actual
             items = st.session_state["venta_items"]
             if items:
-                # Botón para eliminar items individuales
                 st.markdown("**Carrito actual:**")
-                items_display = []
-                for i, item in enumerate(items):
-                    items_display.append({
-                        "Producto": item["nombre"],
-                        "Cantidad": item["cantidad"],
-                        "P.Unit": f"S/ {item['precio']:.2f}",
-                        "Subtotal": f"S/ {item['subtotal']:.2f}",
-                        "Acciones": f"🗑️ Eliminar"
-                    })
                 
-                # Mostrar tabla con opción de eliminar
-                for i, item_display in enumerate(items_display):
+                # Mostrar items con opción de eliminar
+                for i, item in enumerate(items):
                     col1, col2, col3, col4, col5 = st.columns([3, 1, 1, 1, 1])
                     with col1:
-                        st.write(item_display["Producto"])
+                        st.write(item["nombre"])
                     with col2:
-                        st.write(item_display["Cantidad"])
+                        st.write(item["cantidad"])
                     with col3:
-                        st.write(item_display["P.Unit"])
+                        st.write(f"S/ {item['precio']:.2f}")
                     with col4:
-                        st.write(item_display["Subtotal"])
+                        st.write(f"S/ {item['subtotal']:.2f}")
                     with col5:
                         if st.button("🗑️", key=f"del_{i}", help="Eliminar item"):
                             st.session_state["venta_items"].pop(i)
@@ -293,19 +278,16 @@ with tab_nueva:
                         # 5) Mostrar éxito y recibo
                         st.success(f"🎉 ¡Venta registrada exitosamente! (ID: {venta_id})")
                         
-                        # Generar y mostrar recibo
-                        st.markdown("### 📄 Recibo de Venta")
-                        recibo_html = generar_recibo_html(venta_completa, items_recibo)
-                        st.markdown(recibo_html, unsafe_allow_html=True)
+                        # Mostrar recibo
+                        st.markdown("## 📄 Recibo de Venta")
+                        mostrar_recibo_streamlit(venta_completa, items_recibo)
                         
                         # Limpiar carrito
                         st.session_state["venta_items"] = []
                         
-                        # Botón para imprimir/descargar (opcional)
-                        st.markdown("---")
-                        if st.button("🖨️ Imprimir recibo"):
-                            # Aquí podrías implementar funcionalidad de impresión
-                            st.info("💡 Tip: Puedes usar Ctrl+P para imprimir solo el recibo")
+                        # Botón para nueva venta
+                        if st.button("🔄 Nueva venta"):
+                            st.rerun()
 
                     except Exception as e:
                         st.error(f"❌ Error al registrar la venta: {str(e)}")
@@ -358,7 +340,7 @@ with tab_listado:
     
     if ventas:
         # Mostrar resumen
-        total_ventas = sum(v['total'] for v in ventas)
+        total_ventas = sum(float(v['total']) for v in ventas)
         st.metric("💰 Total en ventas mostradas", f"S/ {total_ventas:,.2f}", f"{len(ventas)} ventas")
         
         # Tabla de ventas
@@ -377,7 +359,7 @@ with tab_listado:
             sel = st.selectbox(
                 "Seleccionar venta para ver detalle:",
                 ventas,
-                format_func=lambda v: f"Venta #{v['id']} - {v['socio']} - S/{v['total']:.2f} ({v['fecha'].strftime('%d/%m/%Y')})"
+                format_func=lambda v: f"Venta #{v['id']} - {v['socio']} - S/{float(v['total']):.2f} ({v['fecha'].strftime('%d/%m/%Y')})"
             )
 
             if sel:
