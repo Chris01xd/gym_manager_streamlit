@@ -1,50 +1,73 @@
-# app/pages/8_Ventas.py
+# app/pages/8_Ventas.py  (o 02_Ventas.py)
 # ──────────────────────────────────────────────────────────────────────────────
-# Bootstrap robusto de imports: encuentra ROOT, ajusta sys.path
+# Bootstrap local de imports: NO toca otras vistas
 from pathlib import Path
-import sys
-import importlib.util
+import sys, importlib.util
 
 HERE = Path(__file__).resolve()
 
-# Busca hacia arriba un directorio que contenga "app"
+# Ubica el ROOT (carpeta que contiene "app")
 ROOT = None
 for p in [HERE.parent, *HERE.parents]:
     if (p / "app").exists():
         ROOT = p
         break
 if ROOT is None:
-    # fallback a 2 niveles (/<ROOT>/app/pages/este_archivo.py)
-    ROOT = HERE.parents[2]
+    ROOT = HERE.parents[2]  # fallback típico: /<ROOT>/app/pages/este_archivo.py
 
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-# Intento normal de import; si falla, carga por ruta (sin __init__.py)
 def _load_module(modname: str, path: Path):
+    """Carga un módulo por ruta (sirve aunque no haya __init__.py)."""
     spec = importlib.util.spec_from_file_location(modname, str(path))
+    if not spec or not spec.loader:
+        raise ImportError(f"No se pudo crear spec para {modname} en {path}")
     mod = importlib.util.module_from_spec(spec)
-    assert spec and spec.loader, f"No se pudo crear spec para {modname}"
     spec.loader.exec_module(mod)  # type: ignore[attr-defined]
     return mod
 
+# Intenta import normal de tus libs
 try:
     from app.lib.auth import require_login, has_permission, require_perm
     from app.lib.db import query, db_cursor
     from app.lib.ui import load_base_css
 except Exception:
-    # Carga defensiva por archivo
+    # Si falla, intenta carga por archivo
     app_lib = ROOT / "app" / "lib"
-    ui = _load_module("app.lib.ui", app_lib / "ui.py")
-    db = _load_module("app.lib.db", app_lib / "db.py")
-    auth = _load_module("app.lib.auth", app_lib / "auth.py")
-    # Exporta símbolos como si fueran importados
-    load_base_css = ui.load_base_css
-    query = db.query
-    db_cursor = db.db_cursor
-    require_login = auth.require_login
-    has_permission = auth.has_permission
-    require_perm = auth.require_perm
+    # auth
+    try:
+        _auth = _load_module("app.lib.auth", app_lib / "auth.py")
+        require_login = _auth.require_login
+        has_permission = _auth.has_permission
+        require_perm = _auth.require_perm
+    except Exception as e:
+        # Falla crítica: sin auth no seguimos
+        import streamlit as st
+        st.stop()  # interrumpe ejecución temprana para evitar trazas largas
+
+    # db
+    try:
+        _db = _load_module("app.lib.db", app_lib / "db.py")
+        query = _db.query
+        db_cursor = _db.db_cursor
+    except Exception:
+        import streamlit as st
+        st.error("No se pudo cargar app.lib.db (query/db_cursor). Revisa app/lib/db.py.")
+        st.stop()
+
+    # ui (opcional): si no existe, usamos fallback
+    try:
+        _ui = _load_module("app.lib.ui", app_lib / "ui.py")
+        load_base_css = _ui.load_base_css
+    except Exception:
+        def load_base_css():
+            import streamlit as st
+            st.markdown(
+                "<style>/* CSS base mínimo */ .stButton>button{font-weight:600}</style>",
+                unsafe_allow_html=True
+            )
+
 # ──────────────────────────────────────────────────────────────────────────────
 
 import streamlit as st
@@ -66,17 +89,20 @@ def _to_datetime(v: Any) -> Optional[datetime]:
     s = str(v).strip().replace("Z", "")
     if not s:
         return None
+    # ISOfirst
     try:
         return datetime.fromisoformat(s)
     except Exception:
-        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
-            try:
-                dt = datetime.strptime(s, fmt)
-                if fmt == "%Y-%m-%d":
-                    dt = datetime.combine(dt.date(), time.min)
-                return dt
-            except Exception:
-                pass
+        pass
+    # formatos comunes
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            dt = datetime.strptime(s, fmt)
+            if fmt == "%Y-%m-%d":
+                dt = datetime.combine(dt.date(), time.min)
+            return dt
+        except Exception:
+            continue
     return None
 
 def _fmt_money(v: Any) -> str:
@@ -311,15 +337,18 @@ with tab_nueva:
                 if confirmar:
                     try:
                         with db_cursor(commit=True) as cur:
+                            # Cabecera
                             cur.execute(
                                 "INSERT INTO venta(socio_id, fecha, total) VALUES (%s, %s, %s) RETURNING id",
                                 (socio["id"], datetime.combine(fecha_venta, datetime.now().time()), total)
                             )
                             venta_id = cur.fetchone()["id"]
 
+                            # Ítems con validación de stock
                             for it in items:
                                 add_item_with_stock_guard(cur, venta_id, it)
 
+                            # Recalcular total
                             cur.execute("""
                                 UPDATE venta v
                                 SET total = COALESCE((
@@ -332,6 +361,7 @@ with tab_nueva:
                             """, (venta_id,))
                             _ = cur.fetchone()["total"]
 
+                        # Datos para recibo
                         venta_completa = query("""
                             SELECT v.id, v.fecha, v.total, s.nombre as socio
                             FROM venta v
@@ -397,8 +427,10 @@ with tab_listado:
     elif filtro_fecha == "Esta semana":
         sql += " AND v.fecha >= CURRENT_DATE - INTERVAL '7 days'"
     elif filtro_fecha == "Este mes":
-        sql += " AND EXTRACT(month FROM v.fecha) = EXTRACT(month FROM CURRENT_DATE) " \
-               "AND EXTRACT(year FROM v.fecha) = EXTRACT(year FROM CURRENT_DATE)"
+        sql += (
+            " AND EXTRACT(month FROM v.fecha) = EXTRACT(month FROM CURRENT_DATE)"
+            " AND EXTRACT(year FROM v.fecha) = EXTRACT(year FROM CURRENT_DATE)"
+        )
 
     sql += " ORDER BY v.id DESC LIMIT 200"
 
@@ -465,9 +497,11 @@ with tab_listado:
                 if st.button("🗑️ Anular venta", type="secondary"):
                     try:
                         with db_cursor(commit=True) as cur:
+                            # Devolver stock
                             cur.execute("SELECT producto_id, cantidad FROM venta_item WHERE venta_id = %s", (sel["id"],))
                             for r in cur.fetchall():
                                 cur.execute("UPDATE producto SET stock = stock + %s WHERE id = %s", (r["cantidad"], r["producto_id"]))
+                            # Eliminar registros
                             cur.execute("DELETE FROM venta_item WHERE venta_id = %s", (sel["id"],))
                             cur.execute("DELETE FROM venta WHERE id = %s", (sel["id"],))
 
