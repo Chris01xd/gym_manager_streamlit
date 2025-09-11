@@ -332,21 +332,24 @@ with tab_listado:
     sql += " ORDER BY p.fecha DESC, p.id DESC LIMIT %s"
     params.append(limite)
 
-    rows = query(sql, tuple(params))
+    try:
+        rows = query(sql, tuple(params))
+    except Exception as e:
+        st.error(f"Error consultando pagos: {e}")
+        rows = []
 
     # Totales del periodo filtrado
     total = sum(r["monto"] for r in rows) if rows else 0
     st.metric("Total en el periodo (S/)", f"{total:,.2f}")
 
-    st.dataframe(rows, use_container_width=True)
-
-    # Exportar CSV
     if rows:
+        st.dataframe(rows, use_container_width=True)
+
+        # Exportar CSV
         csv_data = to_csv(rows, headers=["id", "fecha", "socio", "concepto", "medio", "monto", "ref_externa"])
         st.download_button("⬇️ Exportar CSV", data=csv_data, file_name="pagos.csv", mime="text/csv")
 
-    # Sección para regenerar recibos
-    if rows:
+        # Sección para regenerar recibos
         st.divider()
         st.markdown("### 🧾 Regenerar Recibo")
         sel_recibo = st.selectbox(
@@ -380,40 +383,50 @@ with tab_listado:
                 st.components.v1.html(recibo_html, height=400, scrolling=True)
 
     # Anular / reversar
-    if rows and has_permission("payments_refund"):
-        st.divider()
-        st.markdown("### Anular / Reversar pago")
-        sel = st.selectbox(
-            "Selecciona el pago",
-            rows,
-            format_func=lambda r: f"#{r['id']} | {r['fecha']} | {r['socio']} | S/ {r['monto']} | {r['medio']} | {r['concepto']}"
-        )
-        motivo = st.text_input("Motivo de anulación (se registrará en auditoría)")
-        if st.button("🧾 Generar reverso (asiento negativo)"):
-            try:
-                with db_cursor(commit=True) as cur:
-                    # crear contrapartida negativa (no borramos historial)
-                    cur.execute("""
-                        INSERT INTO pago (socio_id, concepto, monto, medio, ref_externa, fecha)
-                        VALUES (
-                            (SELECT socio_id FROM pago WHERE id=%s),
-                            %s,
-                            -(SELECT monto FROM pago WHERE id=%s),
-                            'anulacion',
-                            %s,
-                            now()
-                        )
-                        RETURNING id
-                    """, (sel["id"], f"ANULACIÓN #{sel['id']}: {motivo or sel['concepto']}", sel["id"], f"reversa de #{sel['id']}"))
-                    rid = cur.fetchone()["id"]
-                    auditoria(cur,
-                              accion="reverso_pago",
-                              entidad="pago",
-                              entidad_id=rid,
-                              detalle=f'{{"reversa_de": {sel["id"]}}}')
-                st.success(f"Pago reversado con asiento #{rid}")
-                st.rerun()
-            except Exception as e:
-                st.error(f"No se pudo reversar: {e}")
-    elif rows:
-        st.info("No tienes permiso para anular/reversar pagos.")
+    if rows:
+        # Verificar permisos para reversar
+        puede_reversar = False
+        try:
+            puede_reversar = has_permission("payments_refund")
+        except Exception:
+            pass
+        
+        if puede_reversar:
+            st.divider()
+            st.markdown("### Anular / Reversar pago")
+            sel = st.selectbox(
+                "Selecciona el pago",
+                rows,
+                format_func=lambda r: f"#{r['id']} | {r['fecha']} | {r['socio']} | S/ {r['monto']} | {r['medio']} | {r['concepto']}"
+            )
+            motivo = st.text_input("Motivo de anulación (se registrará en auditoría)")
+            if st.button("🧾 Generar reverso (asiento negativo)"):
+                try:
+                    with db_cursor(commit=True) as cur:
+                        # crear contrapartida negativa (no borramos historial)
+                        cur.execute("""
+                            INSERT INTO pago (socio_id, concepto, monto, medio, ref_externa, fecha)
+                            VALUES (
+                                (SELECT socio_id FROM pago WHERE id=%s),
+                                %s,
+                                -(SELECT monto FROM pago WHERE id=%s),
+                                'anulacion',
+                                %s,
+                                now()
+                            )
+                            RETURNING id
+                        """, (sel["id"], f"ANULACIÓN #{sel['id']}: {motivo or sel['concepto']}", sel["id"], f"reversa de #{sel['id']}"))
+                        rid = cur.fetchone()["id"]
+                        auditoria(cur,
+                                  accion="reverso_pago",
+                                  entidad="pago",
+                                  entidad_id=rid,
+                                  detalle=f'{{"reversa_de": {sel["id"]}}}')
+                    st.success(f"Pago reversado con asiento #{rid}")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"No se pudo reversar: {e}")
+        else:
+            st.info("No tienes permiso para anular/reversar pagos.")
+    else:
+        st.info("No se encontraron pagos en el periodo seleccionado.")
