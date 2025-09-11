@@ -37,6 +37,184 @@ def auditoria(cur, accion, entidad, entidad_id=None, detalle=None):
         # si no existe la tabla o falla, no romper el flujo
         pass
 
+def generar_recibo_html(pago_data):
+    """Genera HTML para el recibo de pago"""
+    fecha_formato = pago_data['fecha'].strftime('%d/%m/%Y %H:%M') if isinstance(pago_data['fecha'], datetime) else pago_data['fecha']
+    
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <style>
+            body {{
+                font-family: 'Courier New', monospace;
+                max-width: 400px;
+                margin: 0 auto;
+                padding: 20px;
+                background: white;
+                color: black;
+            }}
+            .header {{
+                text-align: center;
+                border-bottom: 2px solid #333;
+                padding-bottom: 10px;
+                margin-bottom: 15px;
+            }}
+            .gym-name {{
+                font-size: 18px;
+                font-weight: bold;
+                margin-bottom: 5px;
+            }}
+            .recibo-title {{
+                font-size: 16px;
+                font-weight: bold;
+                margin-top: 10px;
+            }}
+            .info-row {{
+                display: flex;
+                justify-content: space-between;
+                margin: 8px 0;
+                padding: 2px 0;
+            }}
+            .label {{
+                font-weight: bold;
+                min-width: 120px;
+            }}
+            .value {{
+                text-align: right;
+                flex: 1;
+            }}
+            .separator {{
+                border-bottom: 1px dashed #666;
+                margin: 15px 0;
+                height: 1px;
+            }}
+            .total {{
+                font-size: 18px;
+                font-weight: bold;
+                text-align: center;
+                padding: 10px;
+                border: 2px solid #333;
+                margin: 15px 0;
+            }}
+            .footer {{
+                text-align: center;
+                font-size: 12px;
+                margin-top: 20px;
+                border-top: 1px solid #333;
+                padding-top: 10px;
+            }}
+            .numero-recibo {{
+                text-align: center;
+                font-size: 14px;
+                margin: 10px 0;
+            }}
+            @media print {{
+                body {{ 
+                    margin: 0;
+                    padding: 10px;
+                }}
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="header">
+            <div class="gym-name">🏋️ GYM MANAGER</div>
+            <div>RUC: 20123456789</div>
+            <div class="recibo-title">RECIBO DE PAGO</div>
+        </div>
+        
+        <div class="numero-recibo">
+            <strong>N° {pago_data['id']:06d}</strong>
+        </div>
+        
+        <div class="info-row">
+            <span class="label">Fecha:</span>
+            <span class="value">{fecha_formato}</span>
+        </div>
+        
+        <div class="info-row">
+            <span class="label">Cliente:</span>
+            <span class="value">{pago_data['socio']}</span>
+        </div>
+        
+        <div class="info-row">
+            <span class="label">Concepto:</span>
+            <span class="value">{pago_data['concepto']}</span>
+        </div>
+        
+        <div class="info-row">
+            <span class="label">Medio de Pago:</span>
+            <span class="value">{pago_data['medio']}</span>
+        </div>
+        
+        {f'''<div class="info-row">
+            <span class="label">Referencia:</span>
+            <span class="value">{pago_data['ref_externa']}</span>
+        </div>''' if pago_data.get('ref_externa') else ''}
+        
+        <div class="separator"></div>
+        
+        <div class="total">
+            TOTAL: S/ {pago_data['monto']:,.2f}
+        </div>
+        
+        <div class="separator"></div>
+        
+        <div class="footer">
+            <div>¡Gracias por tu pago!</div>
+            <div>Conserva este recibo como comprobante</div>
+            <div style="margin-top: 10px; font-size: 10px;">
+                Atendido por: {st.session_state.get('user', {}).get('email', 'Sistema')}
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+    return html
+
+def mostrar_recibo_interactivo(pago_data):
+    """Muestra el recibo en la interfaz de Streamlit"""
+    st.success("✅ Pago registrado exitosamente")
+    
+    # Generar el HTML del recibo
+    recibo_html = generar_recibo_html(pago_data)
+    
+    # Mostrar el recibo en un contenedor especial
+    st.markdown("### 🧾 Recibo Generado")
+    
+    # Crear dos columnas: una para el recibo y otra para las acciones
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        # Mostrar el recibo usando componente HTML
+        st.components.v1.html(recibo_html, height=600, scrolling=True)
+    
+    with col2:
+        st.markdown("#### Acciones")
+        
+        # Botón para descargar como HTML
+        st.download_button(
+            label="📄 Descargar Recibo (HTML)",
+            data=recibo_html,
+            file_name=f"recibo_{pago_data['id']:06d}.html",
+            mime="text/html",
+            use_container_width=True
+        )
+        
+        # Información adicional
+        st.info("💡 **Tip:** Puedes abrir el archivo HTML descargado en tu navegador e imprimirlo desde allí.")
+        
+        # Botón para limpiar y hacer otro pago
+        if st.button("➕ Registrar Nuevo Pago", use_container_width=True):
+            # Limpiar el estado del recibo
+            if 'mostrar_recibo' in st.session_state:
+                del st.session_state['mostrar_recibo']
+            if 'ultimo_pago' in st.session_state:
+                del st.session_state['ultimo_pago']
+            st.rerun()
+
 # ------------------ Tabs ------------------
 tab_nuevo, tab_listado = st.tabs(["➕ Registrar pago", "📋 Listado / Anular"])
 
@@ -45,47 +223,70 @@ with tab_nuevo:
     if not has_permission("payments_create"):
         st.info("No tienes permiso para registrar pagos.")
     else:
-        socios = query("SELECT id, nombre FROM socio ORDER BY nombre LIMIT 500")
-        if not socios:
-            st.warning("Primero crea un socio.")
+        # Verificar si hay que mostrar un recibo
+        if st.session_state.get('mostrar_recibo') and st.session_state.get('ultimo_pago'):
+            mostrar_recibo_interactivo(st.session_state['ultimo_pago'])
         else:
-            c1, c2 = st.columns([2, 1])
-            with c1:
-                socio = st.selectbox("Socio", socios, format_func=lambda s: f"{s['nombre']} (#{s['id']})")
-            with c2:
-                medio = st.selectbox("Medio de pago", MEDIOS, index=0)
+            # Formulario normal de pago
+            socios = query("SELECT id, nombre FROM socio ORDER BY nombre LIMIT 500")
+            if not socios:
+                st.warning("Primero crea un socio.")
+            else:
+                c1, c2 = st.columns([2, 1])
+                with c1:
+                    socio = st.selectbox("Socio", socios, format_func=lambda s: f"{s['nombre']} (#{s['id']})")
+                with c2:
+                    medio = st.selectbox("Medio de pago", MEDIOS, index=0)
 
-            concepto = st.text_input("Concepto", placeholder="Mensualidad septiembre / Inscripción / Producto, etc.")
-            monto = st.number_input("Monto (S/)", min_value=0.10, step=1.00, value=50.00, format="%.2f")
-            ref = st.text_input("Referencia externa (opcional)", placeholder="N° operación, voucher, etc.")
+                concepto = st.text_input("Concepto", placeholder="Mensualidad septiembre / Inscripción / Producto, etc.")
+                monto = st.number_input("Monto (S/)", min_value=0.10, step=1.00, value=50.00, format="%.2f")
+                ref = st.text_input("Referencia externa (opcional)", placeholder="N° operación, voucher, etc.")
 
-            # Fecha/hora del pago
-            colf1, colf2 = st.columns(2)
-            with colf1:
-                f_pago = st.date_input("Fecha de pago", value=date.today())
-            with colf2:
-                t_pago = st.time_input("Hora", value=datetime.now().time().replace(microsecond=0))
+                # Fecha/hora del pago
+                colf1, colf2 = st.columns(2)
+                with colf1:
+                    f_pago = st.date_input("Fecha de pago", value=date.today())
+                with colf2:
+                    t_pago = st.time_input("Hora", value=datetime.now().time().replace(microsecond=0))
 
-            guardar = st.button("💾 Guardar pago", type="primary", disabled=(not concepto or monto <= 0))
+                guardar = st.button("💾 Guardar pago", type="primary", disabled=(not concepto or monto <= 0))
 
-            if guardar:
-                try:
-                    ts = datetime.combine(f_pago, t_pago)
-                    with db_cursor(commit=True) as cur:
-                        cur.execute("""
-                            INSERT INTO pago (socio_id, concepto, monto, medio, ref_externa, fecha)
-                            VALUES (%s, %s, %s, %s, %s, %s)
-                            RETURNING id
-                        """, (socio["id"], concepto.strip(), monto, medio, (ref or None), ts))
-                        pid = cur.fetchone()["id"]
-                        auditoria(cur,
-                                  accion="crear_pago",
-                                  entidad="pago",
-                                  entidad_id=pid,
-                                  detalle=f'{{"socio_id": {socio["id"]}, "monto": {monto}, "medio": "{medio}"}}')
-                    st.success(f"Pago registrado (ID {pid})")
-                except Exception as e:
-                    st.error(f"No se pudo registrar el pago: {e}")
+                if guardar:
+                    try:
+                        ts = datetime.combine(f_pago, t_pago)
+                        with db_cursor(commit=True) as cur:
+                            cur.execute("""
+                                INSERT INTO pago (socio_id, concepto, monto, medio, ref_externa, fecha)
+                                VALUES (%s, %s, %s, %s, %s, %s)
+                                RETURNING id
+                            """, (socio["id"], concepto.strip(), monto, medio, (ref or None), ts))
+                            pid = cur.fetchone()["id"]
+                            auditoria(cur,
+                                      accion="crear_pago",
+                                      entidad="pago",
+                                      entidad_id=pid,
+                                      detalle=f'{{"socio_id": {socio["id"]}, "monto": {monto}, "medio": "{medio}"}}')
+                        
+                        # Preparar datos para el recibo
+                        pago_data = {
+                            'id': pid,
+                            'fecha': ts,
+                            'socio': socio['nombre'],
+                            'concepto': concepto.strip(),
+                            'medio': medio,
+                            'monto': monto,
+                            'ref_externa': ref if ref else None
+                        }
+                        
+                        # Guardar en session state y activar vista de recibo
+                        st.session_state['ultimo_pago'] = pago_data
+                        st.session_state['mostrar_recibo'] = True
+                        
+                        # Rerun para mostrar el recibo
+                        st.rerun()
+                        
+                    except Exception as e:
+                        st.error(f"No se pudo registrar el pago: {e}")
 
 # ================== LISTADO ==================
 with tab_listado:
@@ -144,6 +345,40 @@ with tab_listado:
         csv_data = to_csv(rows, headers=["id", "fecha", "socio", "concepto", "medio", "monto", "ref_externa"])
         st.download_button("⬇️ Exportar CSV", data=csv_data, file_name="pagos.csv", mime="text/csv")
 
+    # Sección para regenerar recibos
+    if rows:
+        st.divider()
+        st.markdown("### 🧾 Regenerar Recibo")
+        sel_recibo = st.selectbox(
+            "Selecciona el pago para regenerar su recibo",
+            rows,
+            format_func=lambda r: f"#{r['id']} | {r['fecha']} | {r['socio']} | S/ {r['monto']} | {r['concepto']}"
+        )
+        
+        if st.button("📄 Generar Recibo"):
+            pago_data = {
+                'id': sel_recibo['id'],
+                'fecha': sel_recibo['fecha'],
+                'socio': sel_recibo['socio'],
+                'concepto': sel_recibo['concepto'],
+                'medio': sel_recibo['medio'],
+                'monto': sel_recibo['monto'],
+                'ref_externa': sel_recibo['ref_externa']
+            }
+            
+            recibo_html = generar_recibo_html(pago_data)
+            
+            st.download_button(
+                label="📄 Descargar Recibo",
+                data=recibo_html,
+                file_name=f"recibo_{pago_data['id']:06d}.html",
+                mime="text/html"
+            )
+            
+            # Mostrar preview del recibo
+            with st.expander("👁️ Vista Previa del Recibo"):
+                st.components.v1.html(recibo_html, height=400, scrolling=True)
+
     # Anular / reversar
     if rows and has_permission("payments_refund"):
         st.divider()
@@ -177,7 +412,7 @@ with tab_listado:
                               entidad_id=rid,
                               detalle=f'{{"reversa_de": {sel["id"]}}}')
                 st.success(f"Pago reversado con asiento #{rid}")
-                st.experimental_rerun()
+                st.rerun()
             except Exception as e:
                 st.error(f"No se pudo reversar: {e}")
     elif rows:
