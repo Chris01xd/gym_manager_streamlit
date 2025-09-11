@@ -1,16 +1,12 @@
-# 0_Dashboard.py
-import os
-import streamlit as st
-
+import streamlit as st, os
 from lib.auth import login_form, has_permission
 from lib.sp_wrappers import kpis
 from lib.db import query
 
 st.set_page_config(page_title="Gym Manager", page_icon="🏋️", layout="wide")
 
-# --------------------------
 # Header: título + botón Salir
-# --------------------------
+# Header: título + botón Salir con icono
 left, right = st.columns([0.8, 0.2])
 with left:
     st.title("🏋️ Gym Manager — Dashboard")
@@ -25,56 +21,47 @@ with right:
                 for k in ("user", "permissions", "jwt", "auth_user", "session_id", "col_index"):
                     st.session_state.pop(k, None)
             st.success("Sesión cerrada.")
-            st.rerun()
+            st.experimental_rerun()
 
-# --------------------------
+
 # Si no hay sesión: muestra login
-# --------------------------
 if not st.session_state.get("user"):
     login_form()
 else:
     # Usuario logueado
     u = st.session_state["user"]
-    st.success(f"Hola, {u.get('email','usuario')} ({u.get('rol','—')})")
+    st.success(f"Hola, {u['email']} ({u['rol']})")
 
-    # --------------------------
-    # KPIs via SP (fallback a SQL)
-    # --------------------------
+    # KPIs via SP (si existe); fallback a consultas directas
     try:
-        data = kpis() or []
+        data = kpis()
         d = data[0] if data else {}
         socios = d.get("socios", "—")
         activas = d.get("membresias_activas", "—")
         accesos = d.get("accesos_hoy", "—")
     except Exception:
-        socios  = query("SELECT COUNT(*) c FROM socio")[0]["c"]
+        socios = query("SELECT COUNT(*) c FROM socio")[0]["c"]
         activas = query("SELECT COUNT(*) c FROM membresia WHERE estado='activa' AND fecha_fin>=CURRENT_DATE")[0]["c"]
         accesos = query("SELECT COUNT(*) c FROM acceso WHERE fecha_entrada::date=CURRENT_DATE")[0]["c"]
 
     c1, c2, c3 = st.columns(3)
-    c1.metric("👥 Socios", socios)
-    c2.metric("🪪 Membresías activas", activas)
-    c3.metric("🚪 Accesos hoy", accesos)
+    c1.metric("Socios", socios)
+    c2.metric("Membresías activas", activas)
+    c3.metric("Accesos hoy", accesos)
 
     st.header("Atajos")
 
-    # --------------------------
-    # Columnas para botones
-    # --------------------------
+    # columnas para los botones
     cols = st.columns(3)
 
-    # Asegura contador por sesión
-    if "col_index" not in st.session_state:
-        st.session_state["col_index"] = 0
-
-    def add_link(path: str, label: str, icon: str):
-        """Agrega un link en una de las 3 columnas en orden circular."""
-        idx = st.session_state.get("col_index", 0)
-        with cols[idx % 3]:
+    def add_link(path, label, icon):
+        """Agrega un link en la columna que toque"""
+        nonlocal_index = st.session_state.get("col_index", 0)
+        with cols[nonlocal_index % 3]:
             st.page_link(path, label=label, icon=icon)
-        st.session_state["col_index"] = idx + 1
+        st.session_state["col_index"] = nonlocal_index + 1
 
-    # Reinicia el contador al entrar a la página
+    # reset contador al entrar
     st.session_state["col_index"] = 0
 
     if has_permission("socios_read"):
@@ -98,18 +85,15 @@ else:
     if has_permission("payments_read") or has_permission("payments_create"):
         add_link("pages/10_Pagos.py", "Pagos", "💳")
 
+
     st.divider()
-    st.subheader("📅 Próximas clases (48h)")
-
-    clases = query(
-        """
-        SELECT c.id, c.nombre, s.nombre AS sede, c.fecha_hora, c.capacidad
-        FROM clase c JOIN sede s ON s.id=c.sede_id
-        WHERE c.fecha_hora >= now() - interval '1 hour'
-          AND c.fecha_hora <= now() + interval '48 hours'
-        ORDER BY c.fecha_hora
-        LIMIT 20
-        """
-    )
-
+    st.subheader("Próximas clases (48h)")
+    clases = query("""
+      SELECT c.id, c.nombre, s.nombre AS sede, c.fecha_hora, c.capacidad
+      FROM clase c JOIN sede s ON s.id=c.sede_id
+      WHERE c.fecha_hora >= now() - interval '1 hour'
+        AND c.fecha_hora <= now() + interval '48 hours'
+      ORDER BY c.fecha_hora
+      LIMIT 20
+    """)
     st.dataframe(clases, use_container_width=True)
