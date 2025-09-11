@@ -1,211 +1,165 @@
 # 0_Dashboard.py
-import os
-import pandas as pd
 import streamlit as st
-
 from datetime import datetime, timedelta
 
-# -----------------------------
-# Conexión a PostgreSQL
-# -----------------------------
-def get_engine():
-    # Usa tus variables de entorno o ajusta aquí tus credenciales
-    PG_HOST = os.getenv("PGHOST", "localhost")
-    PG_PORT = os.getenv("PGPORT", "5432")
-    PG_DB   = os.getenv("PGDATABASE", "gymdb")
-    PG_USER = os.getenv("PGUSER", "postgres")
-    PG_PASS = os.getenv("PGPASSWORD", "postgres")
-    url = f"postgresql+psycopg2://{PG_USER}:{PG_PASS}@{PG_HOST}:{PG_PORT}/{PG_DB}"
-    return create_engine(url, pool_pre_ping=True)
+from lib.auth import login_form, has_permission
+from lib.sp_wrappers import kpis
+from lib.db import query
 
-engine = get_engine()
-st.set_page_config(page_title="Dashboard", page_icon="📊", layout="wide")
-st.title("📊 Dashboard del Gimnasio")
+st.set_page_config(page_title="Gym Manager", page_icon="🏋️", layout="wide")
 
-# -----------------------------
-# Filtros
-# -----------------------------
-with engine.connect() as conn:
-    sedes = pd.read_sql("SELECT id, nombre FROM sede ORDER BY nombre;", conn)
+# --------------------------
+# Header: título + botón Salir
+# --------------------------
+left, right = st.columns([0.8, 0.2])
+with left:
+    st.title("🏋️ Gym Manager — Dashboard")
+with right:
+    if st.session_state.get("user"):
+        if st.button("🚪 Salir", type="primary", help="Cerrar sesión"):
+            try:
+                from lib.auth import logout
+                logout()
+            except Exception:
+                for k in ("user", "permissions", "jwt", "auth_user", "session_id", "col_index"):
+                    st.session_state.pop(k, None)
+            st.success("Sesión cerrada.")
+            st.rerun()
+
+# --------------------------
+# Si no hay sesión: login
+# --------------------------
+if not st.session_state.get("user"):
+    login_form()
+    st.stop()
+
+# --------------------------
+# Usuario logueado
+# --------------------------
+u = st.session_state["user"]
+st.success(f"Hola, {u.get('email','usuario')} ({u.get('rol','—')})")
+
+# --------------------------
+# Filtros (Sede y rango)
+# --------------------------
+sedes = query("SELECT id, nombre FROM sede ORDER BY nombre;")
+sede_ids = [s["id"] for s in sedes]
+sede_nombres = {s["id"]: s["nombre"] for s in sedes}
 
 col_f1, col_f2 = st.columns([2,1])
 with col_f1:
     sede_id = st.selectbox(
-        "Sede", 
-        options=sedes["id"].tolist(),
-        format_func=lambda i: sedes.loc[sedes["id"]==i, "nombre"].values[0],
-        index=0 if not sedes.empty else None
+        "Sede",
+        options=sede_ids,
+        format_func=lambda i: sede_nombres.get(i, f"Sede {i}"),
+        index=0 if sede_ids else None
     )
 with col_f2:
-    rango_dias = st.slider("Rango (días) para gráficos", min_value=7, max_value=60, value=30, step=1)
+    rango_dias = st.slider("Rango (días) para gráficos/tablas", 7, 60, 30, 1)
 
 fecha_desde = (datetime.now() - timedelta(days=rango_dias)).date()
 
-# -----------------------------
-# KPIs principales (SP ya definidos)
-# -----------------------------
-with engine.connect() as conn:
-    kpis = conn.execute(text("SELECT * FROM sp_kpis();")).mappings().first()
-    aforo = conn.execute(text("SELECT sp_aforo_actual(:sede) as aforo;"), {"sede": int(sede_id)}).scalar_one()
+# --------------------------
+# KPIs via SP (fallback a SQL)
+# --------------------------
+try:
+    data = kpis() or []
+    d = data[0] if data else {}
+    socios = d.get("socios", "—")
+    activas = d.get("membresias_activas", "—")
+    accesos = d.get("accesos_hoy", "—")
+except Exception:
+    socios  = query("SELECT COUNT(*) c FROM socio")[0]["c"]
+    activas = query("SELECT COUNT(*) c FROM membresia WHERE estado='activa' AND fecha_fin>=CURRENT_DATE")[0]["c"]
+    accesos = query("SELECT COUNT(*) c FROM acceso WHERE fecha_entrada::date=CURRENT_DATE")[0]["c"]
 
-col1, col2, col3, col4 = st.columns(4)
-col1.metric("👥 Socios totales", f"{kpis['socios']:,}")
-col2.metric("🪪 Membresías activas", f"{kpis['membresias_activas']:,}")
-col3.metric("🚪 Accesos hoy", f"{kpis['accesos_hoy']:,}")
-col4.metric(f"🏟️ Aforo actual · {sedes.loc[sedes['id']==sede_id,'nombre'].values[0]}", f"{aforo:,}")
+# aforo actual por sede (usa tu SP)
+try:
+    aforo = query("SELECT sp_aforo_actual(:sede) AS aforo;", {"sede": int(sede_id)})[0]["aforo"]
+except Exception:
+    aforo = "—"
 
-st.divider()
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("👥 Socios", socios)
+c2.metric("🪪 Membresías activas", activas)
+c3.metric("🚪 Accesos hoy", accesos)
+c4.metric(f"🏟️ Aforo actual · {sede_nombres.get(sede_id,'')}", aforo)
 
-# -----------------------------
-# Ventas & Pagos (últimos N días)
-# -----------------------------
-sql_ventas = """
-SELECT date_trunc('day', fecha)::date AS dia, SUM(total)::numeric(12,2) AS total
-FROM venta
-WHERE fecha >= :desde
-GROUP BY 1 ORDER BY 1;
-"""
+# --------------------------
+# Atajos
+# --------------------------
+st.header("Atajos")
 
-sql_pagos = """
-SELECT date_trunc('day', fecha)::date AS dia, SUM(monto)::numeric(12,2) AS total
-FROM pago
-WHERE fecha >= :desde
-GROUP BY 1 ORDER BY 1;
-"""
+cols = st.columns(3)
+if "col_index" not in st.session_state:
+    st.session_state["col_index"] = 0
 
-with engine.connect() as conn:
-    df_ventas = pd.read_sql(text(sql_ventas), conn, params={"desde": fecha_desde})
-    df_pagos  = pd.read_sql(text(sql_pagos),  conn, params={"desde": fecha_desde})
+def add_link(path: str, label: str, icon: str):
+    idx = st.session_state.get("col_index", 0)
+    with cols[idx % 3]:
+        st.page_link(path, label=label, icon=icon)
+    st.session_state["col_index"] = idx + 1
 
-c1, c2 = st.columns(2)
-with c1:
-    st.subheader("💵 Ventas por día")
-    if df_ventas.empty:
-        st.info("Sin ventas en el rango seleccionado.")
-    else:
-        st.line_chart(df_ventas.set_index("dia")["total"])
-        st.caption(f"Total: S/ {df_ventas['total'].sum():,.2f}")
+st.session_state["col_index"] = 0  # reinicia al pintar
 
-with c2:
-    st.subheader("💳 Pagos por día")
-    if df_pagos.empty:
-        st.info("Sin pagos en el rango seleccionado.")
-    else:
-        st.line_chart(df_pagos.set_index("dia")["total"])
-        st.caption(f"Total: S/ {df_pagos['total'].sum():,.2f}")
-
-st.divider()
-
-# -----------------------------
-# Membresías activas por plan y por vencer
-# -----------------------------
-sql_memb_por_plan = """
-SELECT mp.nombre AS plan, COUNT(*) AS activas
-FROM membresia m
-JOIN membresia_plan mp ON mp.id = m.plan_id
-WHERE m.estado='activa' AND m.fecha_fin >= CURRENT_DATE
-GROUP BY mp.nombre
-ORDER BY 2 DESC;
-"""
-
-sql_por_vencer = """
-SELECT s.id AS socio_id, s.nombre, mp.nombre AS plan, m.fecha_fin
-FROM membresia m
-JOIN socio s ON s.id = m.socio_id
-JOIN membresia_plan mp ON mp.id = m.plan_id
-WHERE m.estado='activa'
-  AND m.fecha_fin BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '7 days'
-ORDER BY m.fecha_fin;
-"""
-
-with engine.connect() as conn:
-    df_plan = pd.read_sql(sql_memb_por_plan, conn)
-    df_vencer = pd.read_sql(sql_por_vencer, conn)
-
-c3, c4 = st.columns(2)
-with c3:
-    st.subheader("🪪 Membresías activas por plan")
-    if df_plan.empty:
-        st.info("No hay membresías activas.")
-    else:
-        st.bar_chart(df_plan.set_index("plan")["activas"])
-
-with c4:
-    st.subheader("⏳ Por vencer (próx. 7 días)")
-    st.dataframe(df_vencer, use_container_width=True, hide_index=True)
+if has_permission("socios_read"):
+    add_link("pages/1_Socios.py", "Socios", "👤")
+if has_permission("membership_assign") or has_permission("plans_manage"):
+    add_link("pages/2_Membresias.py", "Membresías", "💳")
+if has_permission("classes_publish") or has_permission("reservations_create"):
+    add_link("pages/3_Clases.py", "Clases", "📆")
+if has_permission("access_entry") or has_permission("access_exit"):
+    add_link("pages/4_Accesos_Aforo.py", "Accesos/Aforo", "🚪")
+if has_permission("reports_view"):
+    add_link("pages/5_Reportes.py", "Reportes", "📊")
+if has_permission("users_manage"):
+    add_link("pages/6_Usuarios.py", "Usuarios (admin)", "👥")
+if has_permission("products_manage"):
+    add_link("pages/7_Productos.py", "Productos", "🛒")
+if has_permission("sales_read") or has_permission("sales_create"):
+    add_link("pages/8_Ventas.py", "Ventas", "💵")
+if has_permission("audit_view"):
+    add_link("pages/9_Auditoria.py", "Auditoría", "📑")
+if has_permission("payments_read") or has_permission("payments_create"):
+    add_link("pages/10_Pagos.py", "Pagos", "💳")
 
 st.divider()
 
-# -----------------------------
-# Clases próximas y ocupación
-# -----------------------------
-sql_clases = """
-SELECT c.id, c.nombre, c.fecha_hora AT TIME ZONE 'UTC' AS fecha_hora_utc, c.capacidad,
-       COALESCE( (SELECT COUNT(*) FROM reserva r WHERE r.clase_id=c.id AND r.estado='confirmada'), 0) AS reservas
-FROM clase c
-WHERE c.sede_id = :sede
-  AND c.fecha_hora >= now()
-ORDER BY c.fecha_hora
-LIMIT 12;
-"""
-with engine.connect() as conn:
-    df_clases = pd.read_sql(text(sql_clases), conn, params={"sede": int(sede_id)})
+# --------------------------
+# Próximas clases
+# --------------------------
+st.subheader("📅 Próximas clases (48h)")
 
-st.subheader("📅 Próximas clases (ocupación)")
-if df_clases.empty:
-    st.info("No hay clases próximas programadas.")
-else:
-    df_tmp = df_clases.copy()
-    df_tmp["ocupación_%"] = (100 * df_tmp["reservas"] / df_tmp["capacidad"]).round(1)
-    df_tmp.rename(columns={"fecha_hora_utc":"fecha_hora"}, inplace=True)
-    st.dataframe(df_tmp[["id","nombre","fecha_hora","capacidad","reservas","ocupación_%"]],
-                 use_container_width=True, hide_index=True)
+clases = query(
+    """
+    SELECT c.id, c.nombre, s.nombre AS sede, c.fecha_hora, c.capacidad,
+           COALESCE((SELECT COUNT(*) FROM reserva r
+                     WHERE r.clase_id=c.id AND r.estado='confirmada'),0) AS reservas
+    FROM clase c
+    JOIN sede s ON s.id=c.sede_id
+    WHERE c.fecha_hora >= now() - interval '1 hour'
+      AND c.fecha_hora <= now() + interval '48 hours'
+      AND c.sede_id = :sede
+    ORDER BY c.fecha_hora
+    LIMIT 20
+    """,
+    {"sede": int(sede_id)}
+)
 
-st.divider()
+# añade % de ocupación si hay filas
+if clases:
+    for row in clases:
+        cap = row.get("capacidad") or 0
+        res = row.get("reservas") or 0
+        row["ocupacion_%"] = round(100 * res / cap, 1) if cap > 0 else 0.0
 
-# -----------------------------
-# Top productos vendidos (últimos N días)
-# -----------------------------
-sql_top_prod = """
-SELECT p.nombre, SUM(vi.cantidad) AS uds, SUM(vi.subtotal)::numeric(12,2) AS total
-FROM venta_item vi
-JOIN venta v ON v.id = vi.venta_id
-JOIN producto p ON p.id = vi.producto_id
-WHERE v.fecha >= :desde
-GROUP BY p.nombre
-ORDER BY total DESC
-LIMIT 10;
-"""
-with engine.connect() as conn:
-    df_prod = pd.read_sql(text(sql_top_prod), conn, params={"desde": fecha_desde})
+st.dataframe(clases, use_container_width=True)
 
-c5, c6 = st.columns([1,1])
-with c5:
-    st.subheader("🏷️ Top productos (S/)")
-    if df_prod.empty:
-        st.info("Sin ventas de productos en el rango.")
-    else:
-        st.bar_chart(df_prod.set_index("nombre")["total"])
-with c6:
-    st.subheader("📦 Top productos (unidades)")
-    if df_prod.empty:
-        st.info("Sin ventas de productos en el rango.")
-    else:
-        st.bar_chart(df_prod.set_index("nombre")["uds"])
-
-st.divider()
-
-# -----------------------------
-# Últimos movimientos (auditoría)
-# -----------------------------
-sql_audit = """
-SELECT fecha, actor, accion, tabla, entidad_id, detalle
-FROM auditoria_v
-ORDER BY fecha DESC
-LIMIT 15;
-"""
-with engine.connect() as conn:
-    df_audit = pd.read_sql(sql_audit, conn)
-
-st.subheader("📝 Últimos movimientos")
-st.dataframe(df_audit, use_container_width=True, hide_index=True)
+# --------------------------
+# Comprobación rápida de DB (puedes borrar esto luego)
+# --------------------------
+try:
+    ping = query("SELECT 1 AS ok;")[0]["ok"]
+    st.caption(f"DB ok = {ping}")
+except Exception as e:
+    st.error(f"DB error: {e}")
